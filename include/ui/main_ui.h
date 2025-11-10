@@ -38,6 +38,7 @@ private:
     std::vector<Title> available_titles_;
     std::vector<bool> selected_titles_;
     int selected_disc_index_ = 0;
+    int selected_title_index_ = 0;
     
     // Progress tracking
     RipProgress current_rip_progress_;

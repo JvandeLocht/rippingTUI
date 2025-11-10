@@ -89,28 +89,30 @@ void MainUI::run() {
     });
     
     // Title selector with checkboxes
-    std::vector<Component> title_checkboxes;
-    
-    auto title_selector = Renderer([this] {
+    std::vector<std::string> title_entries;
+    auto title_menu = Menu(&title_entries, &selected_title_index_);
+
+    auto title_selector = Renderer(title_menu, [this, &title_entries, title_menu] {
+        // Update title entries
+        title_entries.clear();
+        for (size_t i = 0; i < available_titles_.size(); ++i) {
+            const auto& title = available_titles_[i];
+            std::string checkbox = selected_titles_[i] ? "[X] " : "[ ] ";
+            title_entries.push_back(
+                checkbox + "Title " + std::to_string(title.index) + ": " +
+                title.duration + " (" + title.size + ")"
+            );
+        }
+
         if (available_titles_.empty()) {
             return text("No titles loaded") | dim;
         }
-        
-        Elements title_elements;
-        title_elements.push_back(text("Select titles to rip:") | bold);
-        title_elements.push_back(separator());
-        
-        for (size_t i = 0; i < available_titles_.size(); ++i) {
-            const auto& title = available_titles_[i];
-            title_elements.push_back(hbox({
-                text(selected_titles_[i] ? "[X] " : "[ ] "),
-                text("Title " + std::to_string(title.index) + ": "),
-                text(title.duration + " "),
-                text("(" + title.size + ")") | dim
-            }));
-        }
-        
-        return vbox(title_elements) | frame | size(HEIGHT, LESS_THAN, 15);
+
+        return vbox({
+            text("Select titles to rip:") | bold,
+            separator(),
+            title_menu->Render() | frame | size(HEIGHT, LESS_THAN, 15)
+        });
     });
     
     // Progress view
@@ -217,9 +219,10 @@ void MainUI::run() {
         if (event == Event::Character(' ')) {
             // Toggle title selection
             if (current_state_ == AppState::TITLE_SELECTION &&
-                selected_disc_index_ < static_cast<int>(available_titles_.size())) {
-                selected_titles_[selected_disc_index_] =
-                    !selected_titles_[selected_disc_index_];
+                selected_title_index_ >= 0 &&
+                selected_title_index_ < static_cast<int>(available_titles_.size())) {
+                selected_titles_[selected_title_index_] =
+                    !selected_titles_[selected_title_index_];
             }
             return true;
         }
@@ -265,6 +268,7 @@ void MainUI::load_disc_titles() {
         available_titles_ = titles.value();
         selected_titles_.clear();
         selected_titles_.resize(available_titles_.size(), false);
+        selected_title_index_ = 0;
 
         add_log("Found " + std::to_string(available_titles_.size()) + " title(s)");
         current_state_ = AppState::TITLE_SELECTION;
@@ -272,6 +276,7 @@ void MainUI::load_disc_titles() {
         add_log("Failed to load titles from disc");
         available_titles_.clear();
         selected_titles_.clear();
+        selected_title_index_ = 0;
     }
 }
 
