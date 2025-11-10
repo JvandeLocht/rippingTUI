@@ -40,7 +40,7 @@
 
           meta = with pkgs.lib; {
             description = "TUI for ripping Blu-rays with MakeMKV and HandBrake";
-            license = licenses.mit;
+            license = licenses.gpl2;
             platforms = platforms.linux;
           };
         };

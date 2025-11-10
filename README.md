@@ -144,7 +144,7 @@ gdb ./build/bluray-ripper
 
 ## License
 
-MIT License - See LICENSE file for details
+GPL-2.0 License - See LICENSE file for details
 
 ## Contributing
 
