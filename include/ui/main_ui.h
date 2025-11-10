@@ -56,6 +56,7 @@ private:
     // Helper methods
     void add_log(const std::string& message);
     void scan_for_discs();
+    void load_disc_titles();
     void start_ripping();
     void start_encoding(const std::string& mkv_file);
 };

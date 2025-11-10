@@ -163,7 +163,7 @@ void MainUI::run() {
             separator(),
             hbox({
                 text("Commands: ") | bold,
-                text("q: Quit | r: Rescan | s: Start rip | e: Encode")
+                text("q: Quit | r: Rescan | Enter: Load titles | s: Start rip | e: Encode")
             }) | dim
         });
     });
@@ -201,6 +201,13 @@ void MainUI::run() {
             scan_for_discs();
             return true;
         }
+        if (event == Event::Return) {
+            // Load titles when Enter is pressed on a selected disc
+            if (current_state_ == AppState::DISC_SELECTION && !available_discs_.empty()) {
+                load_disc_titles();
+            }
+            return true;
+        }
         if (event == Event::Character('s')) {
             if (current_state_ == AppState::TITLE_SELECTION) {
                 start_ripping();
@@ -209,9 +216,9 @@ void MainUI::run() {
         }
         if (event == Event::Character(' ')) {
             // Toggle title selection
-            if (current_state_ == AppState::TITLE_SELECTION && 
+            if (current_state_ == AppState::TITLE_SELECTION &&
                 selected_disc_index_ < static_cast<int>(available_titles_.size())) {
-                selected_titles_[selected_disc_index_] = 
+                selected_titles_[selected_disc_index_] =
                     !selected_titles_[selected_disc_index_];
             }
             return true;
@@ -228,16 +235,43 @@ void MainUI::run() {
 void MainUI::scan_for_discs() {
     add_log("Scanning for optical drives...");
     current_state_ = AppState::SCANNING;
-    
+
     // This would be done in a background thread in a real implementation
     available_discs_ = disc_detector_->scan_drives();
-    
+
     if (available_discs_.empty()) {
         add_log("No optical drives found");
         current_state_ = AppState::DISC_SELECTION;
     } else {
         add_log("Found " + std::to_string(available_discs_.size()) + " drive(s)");
         current_state_ = AppState::DISC_SELECTION;
+    }
+}
+
+void MainUI::load_disc_titles() {
+    if (selected_disc_index_ < 0 ||
+        selected_disc_index_ >= static_cast<int>(available_discs_.size())) {
+        add_log("No disc selected");
+        return;
+    }
+
+    const auto& selected_disc = available_discs_[selected_disc_index_];
+    add_log("Loading titles from " + selected_disc.device_path + "...");
+
+    // Load titles from the selected disc
+    auto titles = disc_detector_->get_disc_titles(selected_disc.device_path);
+
+    if (titles.has_value()) {
+        available_titles_ = titles.value();
+        selected_titles_.clear();
+        selected_titles_.resize(available_titles_.size(), false);
+
+        add_log("Found " + std::to_string(available_titles_.size()) + " title(s)");
+        current_state_ = AppState::TITLE_SELECTION;
+    } else {
+        add_log("Failed to load titles from disc");
+        available_titles_.clear();
+        selected_titles_.clear();
     }
 }
 
