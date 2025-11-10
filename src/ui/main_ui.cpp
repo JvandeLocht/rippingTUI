@@ -4,6 +4,7 @@
 #include "ftxui/dom/elements.hpp"
 #include <chrono>
 #include <thread>
+#include <filesystem>
 
 using namespace ftxui;
 
@@ -118,16 +119,23 @@ void MainUI::run() {
     // Progress view
     auto progress_view = Renderer([this] {
         if (current_state_ == AppState::RIPPING) {
+            // Thread-safe access to progress data
+            RipProgress progress_copy;
+            {
+                std::lock_guard<std::mutex> lock(progress_mutex_);
+                progress_copy = current_rip_progress_;
+            }
+
             return vbox({
                 text("Ripping Progress") | bold,
                 separator(),
                 hbox({
                     text("Title: "),
-                    text(std::to_string(current_rip_progress_.current_title) + "/" + 
-                         std::to_string(current_rip_progress_.total_titles))
+                    text(std::to_string(progress_copy.current_title) + "/" +
+                         std::to_string(progress_copy.total_titles))
                 }),
-                gauge(current_rip_progress_.percentage / 100.0) | flex,
-                text(current_rip_progress_.status_message) | dim
+                gauge(progress_copy.percentage / 100.0) | flex,
+                text(progress_copy.status_message) | dim
             });
         } else if (current_state_ == AppState::ENCODING) {
             return vbox({
@@ -231,7 +239,10 @@ void MainUI::run() {
     
     // Initial scan
     scan_for_discs();
-    
+
+    // Store screen reference for async operations
+    screen_ = &screen;
+
     screen.Loop(renderer);
 }
 
@@ -282,8 +293,7 @@ void MainUI::load_disc_titles() {
 
 void MainUI::start_ripping() {
     add_log("Starting rip process...");
-    current_state_ = AppState::RIPPING;
-    
+
     // Collect selected title indices
     std::vector<int> selected_indices;
     for (size_t i = 0; i < selected_titles_.size(); ++i) {
@@ -291,20 +301,67 @@ void MainUI::start_ripping() {
             selected_indices.push_back(available_titles_[i].index);
         }
     }
-    
+
     if (selected_indices.empty()) {
         add_log("No titles selected");
-        current_state_ = AppState::TITLE_SELECTION;
         return;
     }
-    
-    add_log("Ripping " + std::to_string(selected_indices.size()) + " title(s)");
-    
-    // This would start the actual ripping process
-    // For now, just simulate
-    current_rip_progress_.current_title = 1;
-    current_rip_progress_.total_titles = selected_indices.size();
-    current_rip_progress_.percentage = 0.0;
+
+    // Create output directory if it doesn't exist
+    try {
+        std::filesystem::create_directories(output_directory_);
+    } catch (const std::exception& e) {
+        add_log("Error creating output directory: " + std::string(e.what()));
+        return;
+    }
+
+    // Get device path from selected disc
+    if (selected_disc_index_ < 0 ||
+        selected_disc_index_ >= static_cast<int>(available_discs_.size())) {
+        add_log("Invalid disc selection");
+        return;
+    }
+
+    const auto& device_path = available_discs_[selected_disc_index_].device_path;
+
+    add_log("Ripping " + std::to_string(selected_indices.size()) + " title(s) to " + output_directory_);
+    current_state_ = AppState::RIPPING;
+
+    // Initialize progress tracking
+    {
+        std::lock_guard<std::mutex> lock(progress_mutex_);
+        current_rip_progress_.current_title = 0;
+        current_rip_progress_.total_titles = selected_indices.size();
+        current_rip_progress_.percentage = 0.0;
+        current_rip_progress_.status_message = "Starting...";
+    }
+
+    // Create progress callback that updates UI
+    auto progress_callback = [this](const RipProgress& progress) {
+        {
+            std::lock_guard<std::mutex> lock(progress_mutex_);
+            current_rip_progress_ = progress;
+        }
+
+        // Add visible logging for debugging
+        if (progress.percentage > 0 && static_cast<int>(progress.percentage) % 10 == 0) {
+            add_log("RIP: " + std::to_string(static_cast<int>(progress.percentage)) +
+                    "% - " + progress.status_message);
+        }
+
+        // Trigger screen refresh
+        if (screen_) {
+            screen_->Post(Event::Custom);
+        }
+    };
+
+    // Start the actual ripping process
+    rip_future_ = makemkv_->rip_titles(
+        device_path,
+        selected_indices,
+        output_directory_,
+        progress_callback
+    );
 }
 
 void MainUI::start_encoding(const std::string& mkv_file) {

@@ -1,11 +1,14 @@
 #pragma once
 
 #include "ftxui/component/component.hpp"
+#include "ftxui/component/screen_interactive.hpp"
 #include "disc_detector.h"
 #include "makemkv_wrapper.h"
 #include "handbrake_wrapper.h"
 #include <memory>
 #include <vector>
+#include <mutex>
+#include <future>
 
 namespace bluray::ui {
 
@@ -44,6 +47,9 @@ private:
     RipProgress current_rip_progress_;
     EncodeProgress current_encode_progress_;
     std::vector<std::string> log_messages_;
+    std::mutex progress_mutex_;
+    std::future<bool> rip_future_;
+    ftxui::ScreenInteractive* screen_ = nullptr;
     
     // Wrappers
     std::unique_ptr<DiscDetector> disc_detector_;

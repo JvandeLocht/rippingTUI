@@ -2,8 +2,34 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cstdio>
+#include <array>
+#include <memory>
+#include <sstream>
+#include <regex>
+#include <iostream>
+#include <map>
 
 namespace bluray {
+
+namespace {
+    // Helper function to parse size string (e.g., "20.3 GB") to bytes for sorting
+    double parse_size_to_bytes(const std::string& size_str) {
+        std::regex size_regex(R"regex((\d+\.?\d*)\s*(GB|MB|KB|B))regex");
+        std::smatch match;
+
+        if (std::regex_search(size_str, match, size_regex)) {
+            double value = std::stod(match[1].str());
+            std::string unit = match[2].str();
+
+            if (unit == "GB") return value * 1024 * 1024 * 1024;
+            if (unit == "MB") return value * 1024 * 1024;
+            if (unit == "KB") return value * 1024;
+            return value;
+        }
+        return 0.0;
+    }
+}
 
 DiscDetector::DiscDetector() = default;
 
@@ -41,30 +67,93 @@ std::vector<DiscInfo> DiscDetector::scan_drives() {
 
 std::optional<std::vector<Title>> DiscDetector::get_disc_titles(
     const std::string& device_path) {
-    
-    // In a real implementation, this would call:
-    // makemkvcon -r info disc:0
-    // and parse the output to get title information
-    
-    // For now, return dummy data
+
+    // Map device path to disc index for makemkvcon
+    // For now, use disc:0 as we typically have one disc at a time
+    std::string disc_spec = "disc:0";
+
+    // Build command: makemkvcon -r info disc:0
+    std::string command = "makemkvcon -r info " + disc_spec + " 2>&1";
+
+    // Execute command and capture output
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+
+    if (!pipe) {
+        std::cerr << "Failed to run makemkvcon" << std::endl;
+        return std::nullopt;
+    }
+
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+
+    // Parse the output
     std::vector<Title> titles;
-    
-    Title t1;
-    t1.index = 0;
-    t1.duration = "1:45:23";
-    t1.size = "25.4 GB";
-    t1.chapters = 12;
-    t1.description = "Main movie";
-    titles.push_back(t1);
-    
-    Title t2;
-    t2.index = 1;
-    t2.duration = "0:15:32";
-    t2.size = "2.1 GB";
-    t2.chapters = 1;
-    t2.description = "Bonus feature";
-    titles.push_back(t2);
-    
+    std::istringstream stream(result);
+    std::string line;
+
+    // MakeMKV output format:
+    // TCOUNT:<number of titles>
+    // TINFO:<title_index>,<attribute_id>,<attribute_code>,"<value>"
+    // Example attributes: 2=description, 8=chapters, 9=duration, 10=size
+
+    std::map<int, Title> title_map;
+
+    while (std::getline(stream, line)) {
+        if (line.find("TINFO:") == 0) {
+            // Parse TINFO line
+            std::regex tinfo_regex(R"regex(TINFO:(\d+),(\d+),(\d+),"([^"]*)")regex");
+            std::smatch match;
+
+            if (std::regex_search(line, match, tinfo_regex)) {
+                int title_idx = std::stoi(match[1]);
+                int attr_id = std::stoi(match[2]);
+                std::string value = match[4];
+
+                // Ensure title exists in map
+                if (title_map.find(title_idx) == title_map.end()) {
+                    Title t;
+                    t.index = title_idx;
+                    t.duration = "Unknown";
+                    t.size = "Unknown";
+                    t.chapters = 0;
+                    t.description = "";
+                    title_map[title_idx] = t;
+                }
+
+                // Parse different attributes
+                if (attr_id == 2) {
+                    title_map[title_idx].description = value;
+                } else if (attr_id == 8) {
+                    try {
+                        title_map[title_idx].chapters = std::stoi(value);
+                    } catch (...) {}
+                } else if (attr_id == 9) {
+                    title_map[title_idx].duration = value;
+                } else if (attr_id == 10) {
+                    title_map[title_idx].size = value;
+                }
+            }
+        }
+    }
+
+    // Convert map to vector
+    for (const auto& [idx, title] : title_map) {
+        titles.push_back(title);
+    }
+
+    // Sort by size descending (largest first)
+    std::sort(titles.begin(), titles.end(),
+        [](const Title& a, const Title& b) {
+            return parse_size_to_bytes(a.size) > parse_size_to_bytes(b.size);
+        });
+
+    if (titles.empty()) {
+        return std::nullopt;
+    }
+
     return titles;
 }
 
