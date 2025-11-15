@@ -23,11 +23,14 @@ class HandBrakeWrapper {
 public:
     HandBrakeWrapper();
     
-    // Start encoding asynchronously
+    // Start encoding asynchronously with custom parameters
     std::future<bool> encode(
         const std::string& input_file,
         const std::string& output_file,
-        const std::string& preset,  // e.g., "Fast 1080p30"
+        int title_number,           // Title number to encode from the MKV
+        const std::string& encoder, // e.g., "nvenc_h265"
+        const std::string& encoder_preset, // e.g., "slow"
+        int quality,                // CRF/quality value (e.g., 22)
         EncodeCallback callback
     );
     
@@ -44,7 +47,10 @@ private:
     bool execute_handbrake(
         const std::string& input_file,
         const std::string& output_file,
-        const std::string& preset,
+        int title_number,
+        const std::string& encoder,
+        const std::string& encoder_preset,
+        int quality,
         EncodeCallback callback
     );
     

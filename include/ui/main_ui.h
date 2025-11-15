@@ -21,6 +21,12 @@ enum class AppState {
     COMPLETED
 };
 
+struct RippedFile {
+    std::string mkv_path;      // Full path to the ripped MKV file
+    int title_number;           // Original title number from disc
+    std::string output_name;    // Name for the encoded output file
+};
+
 class MainUI {
 public:
     MainUI();
@@ -49,7 +55,12 @@ private:
     std::vector<std::string> log_messages_;
     std::mutex progress_mutex_;
     std::future<bool> rip_future_;
+    std::future<bool> encode_future_;
     ftxui::ScreenInteractive* screen_ = nullptr;
+
+    // Encoding tracking
+    std::vector<RippedFile> ripped_files_;
+    int current_encode_index_ = 0;  // Index of file currently being encoded
     
     // Wrappers
     std::unique_ptr<DiscDetector> disc_detector_;
@@ -65,7 +76,8 @@ private:
     void scan_for_discs();
     void load_disc_titles();
     void start_ripping();
-    void start_encoding(const std::string& mkv_file);
+    void start_encoding();
+    void check_rip_completion();  // Check if ripping is done and update state
 };
 
 } // namespace bluray::ui

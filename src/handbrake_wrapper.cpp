@@ -71,26 +71,41 @@ std::vector<std::string> HandBrakeWrapper::list_presets() {
 std::future<bool> HandBrakeWrapper::encode(
     const std::string& input_file,
     const std::string& output_file,
-    const std::string& preset,
+    int title_number,
+    const std::string& encoder,
+    const std::string& encoder_preset,
+    int quality,
     EncodeCallback callback) {
-    
+
     return std::async(std::launch::async, [=, this]() {
-        return execute_handbrake(input_file, output_file, preset, callback);
+        return execute_handbrake(input_file, output_file, title_number,
+                                 encoder, encoder_preset, quality, callback);
     });
 }
 
 bool HandBrakeWrapper::execute_handbrake(
     const std::string& input_file,
     const std::string& output_file,
-    const std::string& preset,
+    int title_number,
+    const std::string& encoder,
+    const std::string& encoder_preset,
+    int quality,
     EncodeCallback callback) {
-    
-    // Build command with JSON output for easy parsing
-    // HandBrakeCLI -i input.mkv -o output.mp4 --preset "Fast 1080p30" --json
-    std::string cmd = "HandBrakeCLI -i \"" + input_file + 
-                      "\" -o \"" + output_file + 
-                      "\" --preset \"" + preset + 
-                      "\" --json 2>&1";
+
+    // Build command with custom parameters matching user's requirements:
+    // HandBrakeCLI -i input.mkv -o output.mkv -e nvenc_h265 --encoder-preset slow
+    // -q 22 -m --subtitle scan -F --subtitle-burned --all-audio --title N --json
+    std::string cmd = "HandBrakeCLI -i \"" + input_file +
+                      "\" -o \"" + output_file +
+                      "\" -e " + encoder +
+                      " --encoder-preset " + encoder_preset +
+                      " -q " + std::to_string(quality) +
+                      " -m" +  // Chapter markers
+                      " --subtitle scan -F" +  // Scan for forced subtitles
+                      " --subtitle-burned" +  // Burn in subtitles
+                      " --all-audio" +  // Include all audio tracks
+                      " --title " + std::to_string(title_number) +
+                      " --json 2>&1";
     
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {

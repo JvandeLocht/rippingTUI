@@ -5,6 +5,7 @@
 #include <chrono>
 #include <thread>
 #include <filesystem>
+#include <regex>
 
 using namespace ftxui;
 
@@ -119,6 +120,10 @@ void MainUI::run() {
     // Progress view
     auto progress_view = Renderer([this] {
         if (current_state_ == AppState::RIPPING) {
+            // Check if ripping is complete (thread-safe check)
+            // This allows the UI to update when ripping finishes
+            const_cast<MainUI*>(this)->check_rip_completion();
+
             // Thread-safe access to progress data
             RipProgress progress_copy;
             {
@@ -138,15 +143,28 @@ void MainUI::run() {
                 text(progress_copy.status_message) | dim
             });
         } else if (current_state_ == AppState::ENCODING) {
+            // Thread-safe access to progress data
+            EncodeProgress progress_copy;
+            {
+                std::lock_guard<std::mutex> lock(progress_mutex_);
+                progress_copy = current_encode_progress_;
+            }
+
             return vbox({
                 text("Encoding Progress") | bold,
                 separator(),
-                text("Input: " + current_encode_progress_.input_file) | dim,
-                gauge(current_encode_progress_.percentage / 100.0) | flex,
                 hbox({
-                    text("FPS: " + std::to_string(current_encode_progress_.fps) + " "),
-                    text("ETA: " + current_encode_progress_.eta) | dim
-                })
+                    text("File: "),
+                    text(std::to_string(current_encode_index_ + 1) + "/" +
+                         std::to_string(ripped_files_.size()))
+                }),
+                gauge(progress_copy.percentage / 100.0) | flex,
+                hbox({
+                    text("FPS: " + std::to_string(static_cast<int>(progress_copy.fps)) + " | "),
+                    text("Avg: " + std::to_string(static_cast<int>(progress_copy.avg_fps)) + " | "),
+                    text("ETA: " + progress_copy.eta)
+                }) | dim,
+                text(progress_copy.status_message) | dim
             });
         }
         return text("");
@@ -221,6 +239,52 @@ void MainUI::run() {
         if (event == Event::Character('s')) {
             if (current_state_ == AppState::TITLE_SELECTION) {
                 start_ripping();
+            }
+            return true;
+        }
+        if (event == Event::Character('e')) {
+            // Start encoding - scan for MKV files if needed
+            if (ripped_files_.empty()) {
+                // Scan output directory for MKV files
+                add_log("Scanning for MKV files in " + output_directory_);
+                try {
+                    for (const auto& entry : std::filesystem::directory_iterator(output_directory_)) {
+                        if (entry.is_regular_file() && entry.path().extension() == ".mkv") {
+                            std::string mkv_path = entry.path().string();
+                            std::string filename = entry.path().filename().string();
+
+                            // Extract title number from filename
+                            // MakeMKV creates files like "Movie_t01.mkv" or "title01.mkv"
+                            int title_num = 1;  // Default to 1
+                            std::regex title_regex(R"(_t(\d+)\.mkv|title(\d+)\.mkv)");
+                            std::smatch match;
+                            if (std::regex_search(filename, match, title_regex)) {
+                                // Check which group matched
+                                if (match[1].matched) {
+                                    title_num = std::stoi(match[1]);
+                                } else if (match[2].matched) {
+                                    title_num = std::stoi(match[2]);
+                                }
+                            }
+
+                            RippedFile ripped;
+                            ripped.mkv_path = mkv_path;
+                            ripped.title_number = title_num;
+                            ripped.output_name = filename;
+
+                            ripped_files_.push_back(ripped);
+                            add_log("Found: " + filename + " (title " + std::to_string(title_num) + ")");
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    add_log("Error scanning directory: " + std::string(e.what()));
+                }
+            }
+
+            if (!ripped_files_.empty()) {
+                start_encoding();
+            } else {
+                add_log("No MKV files found in " + output_directory_);
             }
             return true;
         }
@@ -364,11 +428,160 @@ void MainUI::start_ripping() {
     );
 }
 
-void MainUI::start_encoding(const std::string& mkv_file) {
-    add_log("Starting encoding: " + mkv_file);
+void MainUI::start_encoding() {
+    if (ripped_files_.empty()) {
+        add_log("No files to encode");
+        return;
+    }
+
+    add_log("Starting encoding of " + std::to_string(ripped_files_.size()) + " file(s)...");
     current_state_ = AppState::ENCODING;
-    
-    // This would start the actual encoding process
+    current_encode_index_ = 0;
+
+    // Create encoded output subdirectory
+    std::string encoded_dir = output_directory_ + "/encoded";
+    try {
+        std::filesystem::create_directories(encoded_dir);
+    } catch (const std::exception& e) {
+        add_log("Error creating encoded output directory: " + std::string(e.what()));
+        return;
+    }
+
+    // Reset encode progress
+    {
+        std::lock_guard<std::mutex> lock(progress_mutex_);
+        current_encode_progress_.percentage = 0.0;
+        current_encode_progress_.fps = 0.0;
+        current_encode_progress_.avg_fps = 0.0;
+        current_encode_progress_.eta = "00:00:00";
+        current_encode_progress_.status_message = "Starting...";
+    }
+
+    // Encode all files sequentially
+    encode_future_ = std::async(std::launch::async, [this, encoded_dir]() {
+        bool all_success = true;
+
+        for (size_t i = 0; i < ripped_files_.size(); ++i) {
+            current_encode_index_ = i;
+            const auto& file = ripped_files_[i];
+
+            std::string output_path = encoded_dir + "/" + file.output_name;
+            add_log("Encoding " + std::to_string(i + 1) + "/" +
+                    std::to_string(ripped_files_.size()) + ": " + file.output_name);
+
+            // Create progress callback for this file
+            auto progress_callback = [this, i, total = ripped_files_.size()](const EncodeProgress& progress) {
+                {
+                    std::lock_guard<std::mutex> lock(progress_mutex_);
+                    current_encode_progress_ = progress;
+                    // Add file tracking info to the progress
+                    current_encode_progress_.status_message =
+                        "File " + std::to_string(i + 1) + "/" + std::to_string(total) +
+                        " - " + std::to_string(static_cast<int>(progress.percentage)) + "%";
+                }
+
+                // Trigger screen refresh
+                if (screen_) {
+                    screen_->Post(Event::Custom);
+                }
+            };
+
+            // Encode with custom parameters: x265 (or nvenc_h265 if GPU available), slow, quality 22
+            // Note: Use "nvenc_h265" if you have NVIDIA GPU, otherwise use "x265"
+            auto encode_future = handbrake_->encode(
+                file.mkv_path,
+                output_path,
+                file.title_number,
+                "x265",  // Change to "nvenc_h265" if you have NVIDIA GPU
+                "slow",
+                22,
+                progress_callback
+            );
+
+            // Wait for this file to complete
+            bool success = encode_future.get();
+            if (!success) {
+                add_log("ERROR: Failed to encode " + file.output_name);
+                all_success = false;
+                break;
+            } else {
+                add_log("Successfully encoded " + file.output_name);
+            }
+        }
+
+        // Update state when all encoding is complete
+        if (all_success) {
+            add_log("All files encoded successfully!");
+            current_state_ = AppState::COMPLETED;
+        }
+
+        if (screen_) {
+            screen_->Post(Event::Custom);
+        }
+
+        return all_success;
+    });
+}
+
+void MainUI::check_rip_completion() {
+    // Check if ripping is complete
+    if (rip_future_.valid() &&
+        rip_future_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+
+        bool success = rip_future_.get();
+        if (success) {
+            add_log("Ripping completed successfully!");
+
+            // Scan output directory for ripped MKV files
+            ripped_files_.clear();
+            try {
+                for (const auto& entry : std::filesystem::directory_iterator(output_directory_)) {
+                    if (entry.is_regular_file() && entry.path().extension() == ".mkv") {
+                        std::string mkv_path = entry.path().string();
+                        std::string filename = entry.path().filename().string();
+
+                        // Extract title number from filename if possible
+                        // MakeMKV creates files like "Movie_t01.mkv" or "title01.mkv"
+                        int title_num = 1;  // Default to 1
+                        std::regex title_regex(R"(_t(\d+)\.mkv|title(\d+)\.mkv)");
+                        std::smatch match;
+                        if (std::regex_search(filename, match, title_regex)) {
+                            // Check which group matched
+                            if (match[1].matched) {
+                                title_num = std::stoi(match[1]);
+                            } else if (match[2].matched) {
+                                title_num = std::stoi(match[2]);
+                            }
+                        }
+
+                        // Create output filename: same as input but in encoded subdirectory
+                        RippedFile ripped;
+                        ripped.mkv_path = mkv_path;
+                        ripped.title_number = title_num;
+                        ripped.output_name = filename;  // Keep same filename
+
+                        ripped_files_.push_back(ripped);
+                        add_log("Found ripped file: " + filename);
+                    }
+                }
+
+                if (ripped_files_.empty()) {
+                    add_log("Warning: No MKV files found in output directory");
+                } else {
+                    add_log("Found " + std::to_string(ripped_files_.size()) +
+                           " file(s) ready to encode");
+                    add_log("Press 'e' to start encoding");
+                }
+            } catch (const std::exception& e) {
+                add_log("Error scanning output directory: " + std::string(e.what()));
+            }
+
+            // Stay in RIPPING state but allow 'e' key to trigger encoding
+        } else {
+            add_log("Ripping failed");
+            current_state_ = AppState::COMPLETED;
+        }
+    }
 }
 
 void MainUI::add_log(const std::string& message) {
